@@ -1,0 +1,157 @@
+#include <SPI.h>      //Biblioteca para utilização do protocolo SPI;
+#include <MFRC522.h>  //Biblioteca para utilização do circuito RFID MFRC522;
+
+#include <SoftwareSerial.h>  //Biblioteca para utilizar o bluetooth;
+
+#include <Wire.h>     //Biblioteca para uso do protocolo I2C;
+#include <U8g2lib.h>  //Biblioteca para usar o display I2C
+
+#define C_SELECT 10  //Pino SDA do módulo;
+#define RESET 9      //Pino RESET do módulo MFRC522;
+
+#define BOTAO 4  //Pino do botão
+#define BUZZ 7   //Pino do buzzer
+
+//#define OLED_RESET -1  //Em displays que não possuem pino RESET, é dado o valor -1;
+
+SoftwareSerial BT(6, 5);  //6 = RX; 5 = TX; - TX DO MÓDULO VAI NA 6, RX DO MÓDULO VAI NA 5;
+char info;
+
+MFRC522 rfid(C_SELECT, RESET);  //Declaração do módulo com o nome "rfid" no sistema com os pinos do define;
+
+String dados = "";  //String vazia para armazenar o endereço da tag/cartão RFID;
+
+U8X8_SH1106_128X64_NONAME_HW_I2C display(U8X8_PIN_NONE);  // Inicialização para Display SH1106 128x64 I2C
+
+unsigned long tempo_anterior = 0;  //declara varialvel tempo anterior
+unsigned long intervalo = 2000;    //declara variável para o intervalo de tempo que fica tentando ler o cartão
+
+int quantidade_carrinho = 0;  //declara variavel quantidade do carrinho pra adicionar um produto toda vez que passar uma tag
+
+float preco_total;  //declara variável preço total como float (números com virgula)
+
+struct Produtos {  //cria uma estrutura produto, nessa estrutura tem enderço do cartão, nome e preço
+  String end, nome;
+  float preco;
+};
+
+Produtos produto[3];  //cria o vetor produto
+
+void setup() {
+  Serial.begin(9600);
+  BT.begin(38400);
+  SPI.begin();                                   //Inicialização do protocolo SPI;
+  display.begin();                               // inicializa o dispçay
+  display.setPowerSave(0);                       // Liga o display (desliga o modo de economia de energia)
+  display.setFont(u8x8_font_chroma48medium8_r);  // Escolhe uma fonte
+  rfid.PCD_Init();                               //Inicialização do módulo RFID;
+  Serial.println("RFID: Operacional");           //monitor serial escreve "RFDI: operacional quando ligar"
+
+  display.clear();                      //limpa a tela do display
+  display.drawString(2, 1, "lojinha");  //escreve na tela do display na linha 2, coluna 1
+  display.drawString(5, 4, "do");
+  display.drawString(3, 7, "crisao");
+
+  produto[0].end = "30 63 13 A4";      //adiciona informações a estrutura produto
+  produto[0].nome = "abobora";
+  produto[0].preco = 3.99;
+
+  produto[1].end = "10 21 1B A4";
+  produto[1].nome = "picanha";
+  produto[1].preco = 120;
+
+  produto[2].end = "A0 54 15 A4";
+  produto[2].nome = "monster";
+  produto[2].preco = 8.69;
+
+  pinMode(BOTAO, INPUT);  //definindo o botão como INPUT
+  pinMode(BUZZ, OUTPUT);  //definindo o buzzer como output
+}
+
+void loop() {
+  unsigned long tempo_atual = millis();  //Variável para armazenar o valor da função millis();
+  if (tempo_atual - tempo_anterior >= intervalo) {  //Temporização que faz com que o RFID realize uma leitura a cada 2 seg;
+    tempo_anterior = tempo_atual;                   //Variável tempo_anterior sendo "zerada";
+    if (!rfid.PICC_IsNewCardPresent()) {  //If para testar caso o módulo NÃO tenha lido nenhum cartão/tag;
+      return;
+    }
+    if (!rfid.PICC_ReadCardSerial()) {  //If para testar caso o módulo NÃO tenha conseguido ler o endereço do cartão/tag;
+      return;
+    }
+  }
+  if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+    Serial.print("Endereco da TAG (HEX): ");
+
+    for (byte i = 0; i < rfid.uid.size; i++) {  //Loop que percorre o endereço lido no RFID como um vetor;
+      if (rfid.uid.uidByte[i] < 0x10) {
+        Serial.print(" 0");
+      } else {
+        Serial.print(" ");
+      }
+
+      Serial.print(rfid.uid.uidByte[i], HEX);  //Código para conversão dos dados lidos no módulo, de binário para HEX;
+
+      if (rfid.uid.uidByte[i] < 0x10) {
+        dados.concat(String(" 0"));
+      } else {
+        dados.concat(String(" "));
+      }
+      dados.concat(String(rfid.uid.uidByte[i], HEX));
+    }
+
+    dados.toUpperCase();  //Colocando todos os valores do endereço em caixa alta;
+    Serial.println();     //Printa os valores de endereço no Console Serial;
+    rfid.PICC_HaltA();
+
+    for (int i = 0; i < 3; i++) {
+      if (dados.substring(1) == produto[i].end) {       //lê o endereço do cartão rfid
+        Serial.println("produto: " + produto[i].nome);  //lê no Serial Monitor Produto + o nome do produto
+        Serial.println("valor: " + String(produto[i].preco));
+        preco_total += produto[i].preco;  //adiciona o preço total
+        quantidade_carrinho++;            //adiciona um na quantidade do carrinho toda vez que for lido uma tag
+        tone(BUZZ, 1500);                 //buzzer da um bip
+        delay(20);
+        noTone(BUZZ);      //buzzer desliga
+        tone(BUZZ, 1500);  //buzzer da um bip
+        delay(20);
+        noTone(BUZZ);  //buzzer desliga
+
+        display.clear();                      //limpa tela do display
+        display.drawString(0, 1, "item  :");  // Escreve texto na coluna 0, linha 1
+        display.setCursor(9, 1);
+        display.print(produto[i].nome);  //escreve os dados da estrutura
+
+        display.drawString(0, 4, "qtd   :");  // Escreve texto na coluna 0, linha 4
+        display.setCursor(9, 4);
+        display.print(quantidade_carrinho);  //escreve o valor da variavel no display
+
+        display.drawString(0, 7, "preco :");  // Escreve texto na coluna 0, linha 7
+        display.setCursor(9, 7);
+        display.print(preco_total);  //escreve o valor da variavel no display
+      }
+    }
+
+    dados = "";  //zera os dados do serial monitor
+  }
+
+  if (digitalRead(BOTAO) == LOW) {  //ao apertar o botao envia uma mensagem ao celular
+    delay(200);
+
+    BT.println("===resumo da compra===");
+    BT.println("quantidade: " + String(quantidade_carrinho));// manda por bluetooth a mensagem "quantidade + a quantidade total dos itens"
+    BT.println("preco: " + String(preco_total));//manda por bluetooth a mensagem "preco + o preço total dos itens"
+    display.clear();
+    display.drawString(0, 1, "Compra ");
+    display.drawString(0, 4, "finalizada ");
+    delay(2000);              // Exibe por 2 segundos a mensagem "Compra Finalizada"
+    quantidade_carrinho = 0;  //zera a variavel
+    preco_total = 0;          //zera a varialvel
+  }
+  if (BT.available()) {
+    info = BT.read();
+    Serial.print(info);  //manda a mensagem pro módulo bluetooth
+  }
+  if (Serial.available()) {
+    BT.write(Serial.read());  //Escreve o que vem do Console Serial
+  }
+}
