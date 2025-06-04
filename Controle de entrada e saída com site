@@ -1,0 +1,333 @@
+#include <ESP8266WiFi.h>       //Biblioteca que contém as funcionalidades de Wi-Fi
+#include <ESP8266WebServer.h>  //Biblioteca que permite a criação de um servidor HTTP via página web;
+
+#include <SPI.h>      //Biblioteca para utilização do protocolo SPI;
+#include <MFRC522.h>  //Biblioteca para utilização do circuito RFID MFRC522;
+
+#include <Wire.h>     // Biblioteca que faz a comunicação do LCD com o NodeMCU
+#include <U8g2lib.h>  //Biblioteca para escrever na tela do display
+
+#define C_SELECT D4  //Pino SDA do módulo;
+#define RESET D3     //Pino RESET do módulo MFRC522;
+
+const char* ssid = "Trabalheira";   // Nome da rede Access Point (Semelhante a um roteador)
+const char* password = "04122006";  //Senha da rede Access Point
+
+U8X8_SH1106_128X64_NONAME_HW_I2C tela(U8X8_PIN_NONE);  // Inicialização para Display SH1106 128x64 I2C
+ESP8266WebServer server(80);                           //Instanciação do servidor web na porta padrão HTTP (porta 80);
+MFRC522 rfid(C_SELECT, RESET);                         //Declaração do módulo com o nome "rfid" no sistema com os pinos do define;
+
+String dados = "";  //String vazia para armazenar o endereço da tag/cartão RFID;
+
+int contador = 0;
+String ultimoValor = "";           //String vazia para receber os valores de "contador" e posteriormente enviá-los à página via HTTP
+unsigned long tempo_anterior = 0;  //Armazena tempo da última leitura
+unsigned long intervalo = 2000;    //Intervalo entre leituras (ms)
+String ultimaTag;                  //Cria uma string chamada ultimaTag pra ler a ultima tag presente
+bool AcessoLiberado = false;       //Cria uma variavel bool para acesso liberado
+bool tagPresente = false;          //Cria variavel pra ler se tem tag presente no RFID
+
+struct usuarios {         //Cria uma estrutura com nome de usuario
+  String end, nome, acc;  //Cria 3 strings chamadas:End(Endereço), Nome, acc(Acesso)
+  bool presente = false;   //Estado de presença (entrada/saída)
+};
+
+usuarios usuario[2];  //Cria o vetor struct usuario com 3 posições
+
+String hexa(byte* ptr_buf, byte tam_buf) {  //Função que converte um pacote de dados em String hexadecimal
+  String endereco = "";                     //Cria uma string vazia para armazenar o endereço
+
+
+  for (byte j = 0; j < tam_buf; j++) {  //Loop para processar cada byte do pacote
+    if (ptr_buf[j] < 0x10) {            //Verifica se o valor byte é menor que "10"
+      endereco.concat(String(" 0"));    //Se for menor que 10 adiciona um "0" para padronização de 2 digitos
+    } else {
+      endereco.concat(String(" "));            //Apenas adiciona um espaço entre os valores EX:"12 D3 A2 B1"
+    }                                          //Se não tiver esse espaço fica "12D3A2B1"
+    endereco.concat(String(ptr_buf[j], HEX));  //Converte o byte atual para hexadecimal e faz a concatenação(Junção)
+  }
+  endereco.toUpperCase();  //Converte tudo para maiusculo
+  return endereco;         //Retorna a string formatada com valores hexadecimais
+  endereco = "";
+}
+
+void paginaPrincipal() {
+  String pagina = R"rawliteral(
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset='UTF-8'>
+      <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+      <title>Controle de Acesso RFID</title>
+      <style>
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          background-color: #f5f5f5;
+          text-align: center;
+          padding: 20px;
+          color: #333;
+        }
+        .header {
+          background-color: #004F92;
+          color: white;
+          padding: 20px;
+          border-radius: 10px;
+          margin-bottom: 25px;
+          box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .info-box {
+          background-color: white;
+          border-radius: 10px;
+          padding: 25px;
+          width: 350px;
+          margin: 0 auto 25px auto;
+          box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+          border-left: 5px solid #004F92;
+        }
+        .info-item {
+          margin: 20px 0;
+          font-size: 1.1em;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 10px 0;
+          border-bottom: 1px solid #eee;
+        }
+        .info-label {
+          font-weight: 600;
+          color: #555;
+          text-align: left;
+          flex: 1;
+        }
+        .info-value {
+          font-weight: 500;
+          color: #222;
+          text-align: right;
+          flex: 1;
+          padding-left: 15px;
+        }
+        #status {
+          font-weight: bold;
+          font-size: 1.2em;
+          margin: 15px 0;
+          padding: 10px;
+          border-radius: 5px;
+          background-color: #f8f9fa;
+        }
+        h1 {
+          margin: 0;
+          font-size: 1.8em;
+        }
+        .permitido {
+          color: #28a745;
+        }
+        .negado {
+          color: #dc3545;
+        }
+        .aguardando {
+          color: #004F92;
+        }
+      </style>
+      <script>
+        function atualizarDados() {
+          fetch('/dados')
+            .then(response => response.json())
+            .then(data => {
+              document.getElementById('tag').textContent = data.tag || "---";
+              document.getElementById('nome').textContent = data.nome || "---";
+              document.getElementById('movimento').textContent = data.movimento || "---";
+             
+              const statusElement = document.getElementById('status');
+              statusElement.textContent = data.status || "Aguardando leitura";
+             
+              // Remove todas as classes de status anteriores
+              statusElement.classList.remove('permitido', 'negado', 'aguardando');
+             
+              // Adiciona a classe apropriada
+              if (data.status === "PERMITIDO") {
+                statusElement.classList.add('permitido');
+              } else if (data.status === "NEGADO") {
+                statusElement.classList.add('negado');
+              } else {
+                statusElement.classList.add('aguardando');
+              }
+            });
+        }
+        setInterval(atualizarDados, 500);
+        window.onload = atualizarDados;
+      </script>
+    </head>
+    <body>
+      <div class="header">
+        <h1>Controle de Acesso RFID</h1>
+        <div id="status" class="aguardando">Aguardando leitura</div>
+      </div>
+      <div class="info-box">
+        <div class="info-item">
+          <span class="info-label">TAG:</span>
+          <span class="info-value" id="tag">---</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Nome:</span>
+          <span class="info-value" id="nome">---</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Acesso:</span>
+          <span class="info-value" id="movimento">---</span>
+        </div>
+      </div>
+    </body>
+    </html>
+  )rawliteral";
+  server.send(200, "text/html", pagina);
+}
+
+void setup() {
+  Serial.begin(9600);
+  //Caso as configurações das linhas 159, 160 e 161 não sejam utilizadas, o NodeMCU vai utilizar o endereço IP 192.168.4.1 por padrão
+  IPAddress local_ip(192, 168, 23, 1);  // Endereço IP local do Access Point
+  IPAddress gateway(192, 168, 23, 1);   // Mesmo IP se o ESP for o "roteador"
+  IPAddress subnet(255, 255, 255, 0);   // Máscara padrão
+
+  WiFi.softAPConfig(local_ip, gateway, subnet);               // Configura o endereçamento da rede Wi-Fi do Access Point com as informações citadas anteriormente
+  WiFi.softAP(ssid, password);                                // Cria a rede Wi-Fi do Access Point com os dados "ssid" (nome da rede) e "password" (senha da rede)
+  Serial.println("IP do AP: " + WiFi.softAPIP().toString());  // Imprime na Serial o endereço IP configurado
+
+   //------------------------ DECLARAÇÃO DO OBJETO JSON ------------------------
+  // Objetos JSON (JavaScript Object Notation) são estruturas de dados que são organizadas em pares chave-valor
+  // Pense neles como "blocos lógicos" usados para encapsular valores de diversos tipos (String, int, float e etc)
+
+  server.on("/dados", []() {                          // Define uma rota HTTP para responder à requisição GET da função de JavaScript "atualizarDados()" declarada acima
+    String json = "{";                                // Definição da String que armazena o conteúdo do objeto JSON, e inicialização da mesma com "{"
+    json += "\"valorCont\":\"" + ultimoValor + "\","; // Forma o par de chave "\"valorCont\":\"" com o valor da variável "ultimoValor"
+   
+    // Encontra o nome do usuário correspondente à tag
+    String nomeUsuario = "---";
+    String movimento = "---";
+    String statusAcesso = "NEGADO";
+  
+    if (ultimaTag != "") {  // Só verifica se há uma tag lida
+      for (int i = 0; i < 2; i++) {
+        if (ultimaTag == usuario[i].end) {
+          nomeUsuario = usuario[i].nome;
+          statusAcesso = (usuario[i].acc == "permitido") ? "PERMITIDO" : "NEGADO";
+          movimento = usuario[i].presente ? "entrada" : "saida";
+          break;
+        }
+      }
+    } else {
+      statusAcesso = "Aguardando leitura";
+    }
+    json += "\"tag\":\"" + ultimaTag + "\",";        // Adiciona a TAG ao JSON
+    json += "\"nome\":\"" + nomeUsuario + "\",";     // Adiciona o nome do usuário ao JSON
+    json += "\"movimento\":\"" + movimento + "\",";  // Adiciona o movimento (entrada/saída) ao JSON
+    json += "\"status\":\"" + statusAcesso + "\"";   // Adiciona o status de acesso ao JSON
+    json += "}";                                     // Termina o objeto JSON com "}"
+    server.send(200, "application/json", json);      // Essa função realiza 3 procedimentos:
+                                                     // 1) O servidor envia o código HTTP 200 OK, indicando que a requisição foi processada corretamente;
+                                                     // 2) Indica que o tipo de dado enviado é um objeto JSON, através de "application/json";
+                                                     // 3) Envia o conteúdo do objeto JSON contido na String "json";
+  });
+  //-------------------- FINAL DA DECLARAÇÃO DO OBJETO JSON -------------------
+
+  server.on("/", paginaPrincipal);      //Inicializa, na rota padrão da página (ou seja, http://192.168.10.1/), todo o conteúdo encontrado na string "pagina" que está declarada na função "paginaPrincipal"
+  server.begin();                       //Inicialização do servidor "server"
+  Serial.println("Servidor iniciado");  //Tela serial escreve "servidor iniciado"
+
+  usuario[0].end = " 26 9B AB AC";
+  usuario[0].nome = "Cristhian";
+  usuario[0].acc = "permitido";
+
+  usuario[1].end = " C6 66 A1 AC";
+  usuario[1].nome = "Maria";
+  usuario[1].acc = "permitido";
+
+  SPI.begin();                                //Inicialização do protocolo SPI;
+  tela.begin();                               // inicializa o dispçay
+  tela.setPowerSave(0);                       // Liga o display (desliga o modo de economia de energia)
+  tela.setFont(u8x8_font_chroma48medium8_r);  // Escolhe uma fonte
+  rfid.PCD_Init();                            //Inicialização do módulo RFID;
+  tela.clear();                               //Limpa a tela
+  tela.drawString(3, 0, "controle");          //Escreve na posição 3 coluna 0 "controle"
+  tela.drawString(7, 4, "de");                //Escreve na posição 7 coluna 4 "de"
+  tela.drawString(1, 7, "entrada/saida");     //Escreve na posição 4 coluna 7 "entrada"
+}
+
+void loop() {
+  server.handleClient();   //Mantém o servidor sempre ativo
+  contador++;              //Soma mais 1 na variável "contador"
+  ultimoValor = contador;  //A cada atualização do valor da variável, converte esse valor em uma String
+  delay(1000);             //Aguarda 1 segundo para atualizar o valor da contagem
+
+  bool tagAtual = rfid.PICC_IsNewCardPresent();  // Verifica se uma tag está presente
+
+  if (tagAtual && !tagPresente) { // Se detectou nova tag
+    if (rfid.PICC_ReadCardSerial()) {// Lê os dados da tag
+      tagPresente = true;
+      ultimaTag = hexa(rfid.uid.uidByte, rfid.uid.size);// Converte UID
+
+       // Variáveis para armazenar dados do usuário
+      bool AcessoLiberado = false;
+      String nomeUsuario = "desconhecido";
+      int usuarioIndex = -1;  //Guarda a posição (índice) do usuário
+      String movimento = "";
+     // Verifica se a tag está cadastrada
+      for (int i = 0; i < 2; i++) {
+        if (ultimaTag == usuario[i].end) {
+          nomeUsuario = usuario[i].nome;
+          AcessoLiberado = (usuario[i].acc == "permitido");
+          usuarioIndex = i;
+
+          // Determina se é entrada ou saída
+          if (usuario[i].presente) {
+            movimento = "saida";
+            usuario[i].presente = false;
+          } else {
+            movimento = "entrada";
+            usuario[i].presente = true;
+          }
+          break;
+        }
+      }
+      // Mostra no Serial Monitor
+      Serial.println("Usuario: " + nomeUsuario);
+      Serial.println("Endereço TAG: " + ultimaTag);
+      Serial.println("Movimento: " + movimento);
+      Serial.println("Acesso: " + String(AcessoLiberado ? "PERMITIDO" : "NEGADO"));
+
+      tela.clear();
+      tela.drawString(0, 0, "----Entradas----");
+
+      tela.drawString(0, 2, "TAG: ");  //Texto
+      tela.setCursor(4, 2);            //Posiciona
+      tela.print(ultimaTag);           //Variável
+
+      tela.drawString(0, 4, "Nome:");
+      tela.setCursor(6, 4);
+      tela.print(nomeUsuario);
+
+      tela.drawString(0, 6, "Acc: ");
+      tela.setCursor(6, 6);
+      tela.print(movimento);
+
+      // Pra evitar varias leituras por segundo
+      rfid.PICC_HaltA();       // Para a comunicação com a tag
+      rfid.PCD_StopCrypto1();  // Para a criptografia no leitor
+
+      // Aguarda a remoção da tag
+      while (rfid.PICC_IsNewCardPresent()) {
+        delay(100);
+      }
+      tagPresente = false;
+    }
+  } else {
+    // Se não há tag presente por mais tempo que o intervalo, volta ao estado inicial
+    if (millis() - tempo_anterior > intervalo + 5000 && ultimaTag != "") {
+      ultimaTag = "";
+      tela.clear();
+      tela.drawString(3, 0, "controle");
+      tela.drawString(7, 4, "de");
+      tela.drawString(1, 7, "entrada/saida");
+    }
+  }
+}
